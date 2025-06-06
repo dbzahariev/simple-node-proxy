@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: simple-node-proxy
+    env: node
+    buildCommand: "npm ci"
+    startCommand: "node index.js"
+    nodeVersion: 18
