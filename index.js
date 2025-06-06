@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +9,7 @@ app.use(cors()); // Разрешаваме заявки отвън
 // Проста прокси ендпойнт
 app.get('/api/todos', async (req, res) => {
   try {
+    const fetch = (await import('node-fetch')).default;
     const response = await fetch('https://jsonplaceholder.typicode.com/todos');
     const data = await response.json();
     res.json(data);
