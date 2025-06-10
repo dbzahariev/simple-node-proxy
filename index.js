@@ -1,63 +1,104 @@
 const express = require('express');
 const cors = require('cors');
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const http = require('http');
+const { Server } = require('socket.io');
 
-// ⚠️ Само за development – игнорира SSL грешки
-process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = '0';
+// ⚠️ For development only – ignore SSL errors
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors()); // Разрешаваме заявки отвън
+app.use(cors());
 
-const fetchFootballData = async (endpoint, res) => {
-  const selected = { version: "v4", competition: "2018" };
-  const apiUrl = `https://api.football-data.org/${selected.version}/competitions/${selected.competition}/${endpoint}`;
-
-  const response = await fetch(apiUrl, {
-    headers: {
-      'X-Auth-Token': 'c8d23279fec54671a43fcd93068762d1' // 🔁 замени с валиден токен, ако се изисква
-    }
-  });
-  res.status(response.status).json(await response.json());
-  // axios.get(apiUrl, { headers: apiHeaders })
-  //   .then(response => {
-  //     res.setHeader('Content-Type', 'application/json');
-  //     res.status(response.status).json(response.data);
-  //   })
-  //   .catch(error => {
-  //     console.error(error);
-  //     res.status(500).json({ error: 'Internal Server Error' });
-  //   });
+const FOOTBALL_API = {
+  version: 'v4',
+  competition: '2018',
+  baseUrl: 'https://api.football-data.org',
+  token: 'c8d23279fec54671a43fcd93068762d1', // Replace with a valid token if needed
 };
 
-app.get('/api/matches', async (req, res) => {
-  await fetchFootballData("matches", res);
-});
+async function fetchFootballData(endpoint) {
+  try {
+    const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/competitions/${FOOTBALL_API.competition}/${endpoint}`;
+    const response = await fetch(url, {
+      headers: { 'X-Auth-Token': FOOTBALL_API.token },
+    });
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return { status: response.status, data };
+  } catch (error) {
+    console.error('fetchFootballData error:', error);
+    return { status: 500, data: { error: error.message } };
+  }
+}
 
-// Проста proxy ендпойнт
 // app.get('/api/matches', async (req, res) => {
-//   try {
-//     const fetch = (await import('node-fetch')).default;
-
-//     const selected = { version: "v4", competition: "2018" };
-//     const response = await fetch(`https://api.football-data.org/${selected.version}/competitions/${selected.competition}/matches`, {
-//       headers: {
-//         'X-Auth-Token': 'c8d23279fec54671a43fcd93068762d1' // 🔁 замени с валиден токен, ако се изисква
-//       }
-//     });
-
-//     if (!response.ok) {
-//       throw new Error(`Upstream API returned status ${response.status}`);
-//     }
-
-//     const data = await response.json();
-//     res.json(data);
-//   } catch (error) {
-//     console.error('Error in proxy:', error.message);
-//     res.status(500).json({ error: 'Proxy error', details: error.message });
-//   }
+//   await checkForUpdates(true);
 // });
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
+});
+
+let lastMatches = null;
+let intervalId = null;
+let clientsCount = 0;
+
+function startInterval() {
+  if (!intervalId) {
+    intervalId = setInterval(async () => {
+      await checkForUpdates();
+    }, 5 * 1000);
+  }
+}
+
+function stopInterval() {
+  if (intervalId) {
+    clearInterval(intervalId);
+    intervalId = null;
+  }
+}
+
+io.on('connection', (socket) => {
+  clientsCount++;
+
+  // if (lastMatches) {
+  //   socket.emit('matchesUpdate', lastMatches);
+  // }
+  startInterval();
+  checkForUpdates();
+
+  socket.on('disconnect', () => {
+    clientsCount--;
+    if (clientsCount === 0) {
+      stopInterval();
+    }
+  });
+});
+
+async function checkForUpdates() {
+  try {
+    const { data } = await fetchFootballData('matches');
+    let foo = JSON.stringify(data) !== JSON.stringify(lastMatches)
+    if (foo) {
+      lastMatches = data;
+      io.emit('matchesUpdate', data);
+    } else {
+      io.emit('matchesUpdate', lastMatches);
+    }
+  } catch (error) {
+    io.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
+  }
+}
+
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
