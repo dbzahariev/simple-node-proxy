@@ -56,7 +56,7 @@ function startInterval() {
   if (!intervalId) {
     intervalId = setInterval(async () => {
       await checkForUpdates();
-    }, 5 * 1000);
+    }, 10 * 1000); // Check for updates every 10 seconds
   }
 }
 
@@ -70,9 +70,6 @@ function stopInterval() {
 io.on('connection', (socket) => {
   clientsCount++;
 
-  // if (lastMatches) {
-  //   socket.emit('matchesUpdate', lastMatches);
-  // }
   startInterval();
   checkForUpdates();
 
@@ -87,8 +84,7 @@ io.on('connection', (socket) => {
 async function checkForUpdates() {
   try {
     const { data } = await fetchFootballData('matches');
-    let foo = JSON.stringify(data) !== JSON.stringify(lastMatches)
-    if (foo) {
+    if (JSON.stringify(data) !== JSON.stringify(lastMatches)) {
       lastMatches = data;
       io.emit('matchesUpdate', data);
     } else {
