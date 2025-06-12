@@ -14,7 +14,7 @@ app.use(cors());
 
 const FOOTBALL_API = {
   version: 'v4',
-  competition: '2018',
+  competition: 'WC', //2018 European Championship; 200 world cup;
   baseUrl: 'https://api.football-data.org',
   token: 'c8d23279fec54671a43fcd93068762d1', // Replace with a valid token if needed
 };
