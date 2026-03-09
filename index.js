@@ -36,9 +36,10 @@ async function fetchFootballData(endpoint) {
   }
 }
 
-// app.get('/api/matches', async (req, res) => {
-//   await checkForUpdates(true);
-// });
+app.get('/api/matches', async (req, res) => {
+  const result = await fetchFootballData('matches');
+  res.status(result.status).json(result.data);
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
