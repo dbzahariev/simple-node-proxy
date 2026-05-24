@@ -3,6 +3,7 @@ const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const http = require('http');
 const { Server } = require('socket.io');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,11 +39,16 @@ async function fetchFootballData(endpoint) {
   } catch (error) {
     const errorMsg = error.name === 'AbortError' ? 'Request timed out' : error.message;
     console.error(`[API Error] ${endpoint}:`, errorMsg);
-    return { status: 500, data: { error: error.message } };
+    return { status: 500, data: { error: errorMsg } };
   } finally {
     clearTimeout(timeout);
   }
 }
+
+// Health-check endpoint for self-pings and monitoring services
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
 
 app.get('/api/matches', async (req, res) => {
   const result = await fetchFootballData('matches');
@@ -58,21 +64,24 @@ const io = new Server(server, {
 });
 
 let lastMatches = null;
+let lastMatchesHash = '';
 let intervalId = null;
 let longIntervalId = null;
 let clientsCount = 0;
 
 function startInterval() {
   if (!intervalId) {
-    intervalId = setInterval(async () => {
+    const runNext = async () => {
       await checkForUpdates();
-    }, 10 * 1000); // Check for updates every 10 seconds
+      intervalId = setTimeout(runNext, 10 * 1000);
+    };
+    runNext();
   }
 }
 
 function stopInterval() {
   if (intervalId) {
-    clearInterval(intervalId);
+    clearTimeout(intervalId);
     intervalId = null;
   }
 }
@@ -80,14 +89,15 @@ function stopInterval() {
 function startLongInterval() {
   if (!longIntervalId) {
     const TEN_MINUTES = 10 * 60 * 1000;
-    console.log(`[${new Date().toLocaleTimeString()}] Long interval initialized (10 min)`);
+    console.log(`[${new Date().toISOString()}] Long interval background service initialized (10 min)`);
     
     const runNext = () => {
+      const nextCheckTime = new Date(Date.now() + TEN_MINUTES).toISOString();
+      console.log(`[${new Date().toISOString()}] Next background update scheduled for: ${nextCheckTime}`);
+
       longIntervalId = setTimeout(async () => {
-        console.log(`[${new Date().toLocaleTimeString()}] Background check (long interval) starting...`);
+        console.log(`[${new Date().toISOString()}] Executing scheduled background check...`);
         await checkForUpdates();
-        const nextTime = new Date(Date.now() + TEN_MINUTES).toLocaleTimeString();
-        console.log(`[${new Date().toLocaleTimeString()}] Background check finished. Next check scheduled for ${nextTime}`);
         runNext();
       }, TEN_MINUTES);
     };
@@ -101,6 +111,22 @@ function stopLongInterval() {
     clearTimeout(longIntervalId);
     longIntervalId = null;
   }
+}
+
+// Self-pinging logic to prevent Render from sleeping
+function startSelfPing() {
+  const url = process.env.RENDER_EXTERNAL_URL;
+  if (!url) return; // Only run if RENDER_EXTERNAL_URL is set (on Render)
+
+  const INTERVAL = 14 * 60 * 1000; // 14 minutes
+  setInterval(async () => {
+    try {
+      const response = await fetch(`${url}/health`);
+      console.log(`[Keep-Alive] Self-ping successful: ${response.status}`);
+    } catch (error) {
+      console.error('[Keep-Alive] Self-ping failed:', error.message);
+    }
+  }, INTERVAL);
 }
 
 io.on('connection', (socket) => {
@@ -122,6 +148,9 @@ io.on('connection', (socket) => {
 // Стартираме дългия интервал веднага, независимо от клиентите
 startLongInterval();
 
+// Start the self-pinging service
+startSelfPing();
+
 // Извикваме проверката веднага веднъж при стартиране на сървъра
 checkForUpdates();
 
@@ -129,18 +158,23 @@ async function checkForUpdates() {
   try {
     const result = await fetchFootballData('matches');
     
-    // Обновяваме само ако заявката е успешна (status 200)
     if (result.status === 200) {
-      if (JSON.stringify(result.data) !== JSON.stringify(lastMatches)) {
+      // Create a hash of the new data to compare efficiently
+      const currentDataStr = JSON.stringify(result.data);
+      const currentHash = crypto.createHash('md5').update(currentDataStr).digest('hex');
+
+      if (currentHash !== lastMatchesHash) {
         lastMatches = result.data;
+        lastMatchesHash = currentHash;
       }
-      io.emit('matchesUpdate', lastMatches);
+      
+      // Use volatile to avoid memory bloat from slow clients
+      io.volatile.emit('matchesUpdate', lastMatches);
     } else if (lastMatches) {
-      // При грешка от API-то, пращаме последната успешна кеширана информация
-      io.emit('matchesUpdate', lastMatches);
+      io.volatile.emit('matchesUpdate', lastMatches);
     }
   } catch (error) {
-    io.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
+    io.volatile.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
   }
 }
 
