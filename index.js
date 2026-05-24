@@ -4,9 +4,6 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const http = require('http');
 const { Server } = require('socket.io');
 
-// ⚠️ For development only – ignore SSL errors
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
