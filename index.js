@@ -70,11 +70,13 @@ function stopInterval() {
 
 io.on('connection', (socket) => {
   clientsCount++;
+  console.log(`Client connected. Total clients: ${clientsCount}`);
 
   startInterval();
   checkForUpdates();
 
   socket.on('disconnect', () => {
+    console.log('Client disconnected');
     clientsCount--;
     if (clientsCount === 0) {
       stopInterval();
