@@ -79,17 +79,26 @@ function stopInterval() {
 
 function startLongInterval() {
   if (!longIntervalId) {
-    console.log(`[${new Date().toLocaleTimeString()}] Starting long interval (10 min)`);
-    longIntervalId = setInterval(async () => {
-      console.log(`[${new Date().toLocaleTimeString()}] Checking for updates (long interval)...`);
-      await checkForUpdates();
-    }, 10 * 60 * 1000); // Проверка на всеки 10 минути
+    const TEN_MINUTES = 10 * 60 * 1000;
+    console.log(`[${new Date().toLocaleTimeString()}] Long interval initialized (10 min)`);
+    
+    const runNext = () => {
+      longIntervalId = setTimeout(async () => {
+        console.log(`[${new Date().toLocaleTimeString()}] Background check (long interval) starting...`);
+        await checkForUpdates();
+        const nextTime = new Date(Date.now() + TEN_MINUTES).toLocaleTimeString();
+        console.log(`[${new Date().toLocaleTimeString()}] Background check finished. Next check scheduled for ${nextTime}`);
+        runNext();
+      }, TEN_MINUTES);
+    };
+
+    runNext();
   }
 }
 
 function stopLongInterval() {
   if (longIntervalId) {
-    clearInterval(longIntervalId);
+    clearTimeout(longIntervalId);
     longIntervalId = null;
   }
 }
