@@ -119,14 +119,18 @@ function startSelfPing() {
   if (!url) return; // Only run if RENDER_EXTERNAL_URL is set (on Render)
 
   const INTERVAL = 14 * 60 * 1000; // 14 minutes
-  setInterval(async () => {
-    try {
-      const response = await fetch(`${url}/health`);
-      console.log(`[Keep-Alive] Self-ping successful: ${response.status}`);
-    } catch (error) {
-      console.error('[Keep-Alive] Self-ping failed:', error.message);
-    }
-  }, INTERVAL);
+  const runNext = () => {
+    setTimeout(async () => {
+      try {
+        const response = await fetch(`${url}/health`);
+        console.log(`[Keep-Alive] Self-ping successful: ${response.status}`);
+      } catch (error) {
+        console.error('[Keep-Alive] Self-ping failed:', error.message);
+      }
+      runNext();
+    }, INTERVAL);
+  };
+  runNext();
 }
 
 io.on('connection', (socket) => {
