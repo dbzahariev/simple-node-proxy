@@ -17,12 +17,16 @@ const FOOTBALL_API = {
 };
 
 async function fetchFootballData(endpoint) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15 секунди таймаут
+
   try {
     const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/competitions/${FOOTBALL_API.competition}/${endpoint}`;
     const startTime = Date.now();
 
     const response = await fetch(url, {
       headers: { 'X-Auth-Token': FOOTBALL_API.token },
+      signal: controller.signal,
     });
     if (!response.ok) {
       throw new Error(`API error: ${response.status}`);
@@ -32,8 +36,11 @@ async function fetchFootballData(endpoint) {
     console.log(`[API Log] Request to ${endpoint} took ${duration}ms`);
     return { status: response.status, data };
   } catch (error) {
-    console.error('fetchFootballData error:', error);
+    const errorMsg = error.name === 'AbortError' ? 'Request timed out' : error.message;
+    console.error(`[API Error] ${endpoint}:`, errorMsg);
     return { status: 500, data: { error: error.message } };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -72,9 +79,9 @@ function stopInterval() {
 
 function startLongInterval() {
   if (!longIntervalId) {
-    console.log('Starting long interval');
+    console.log(`[${new Date().toLocaleTimeString()}] Starting long interval (10 min)`);
     longIntervalId = setInterval(async () => {
-      console.log('Checking for updates long interval.');
+      console.log(`[${new Date().toLocaleTimeString()}] Checking for updates (long interval)...`);
       await checkForUpdates();
     }, 10 * 60 * 1000); // Проверка на всеки 10 минути
   }
@@ -111,11 +118,16 @@ checkForUpdates();
 
 async function checkForUpdates() {
   try {
-    const { data } = await fetchFootballData('matches');
-    if (JSON.stringify(data) !== JSON.stringify(lastMatches)) {
-      lastMatches = data;
-      io.emit('matchesUpdate', data);
-    } else {
+    const result = await fetchFootballData('matches');
+    
+    // Обновяваме само ако заявката е успешна (status 200)
+    if (result.status === 200) {
+      if (JSON.stringify(result.data) !== JSON.stringify(lastMatches)) {
+        lastMatches = result.data;
+      }
+      io.emit('matchesUpdate', lastMatches);
+    } else if (lastMatches) {
+      // При грешка от API-то, пращаме последната успешна кеширана информация
       io.emit('matchesUpdate', lastMatches);
     }
   } catch (error) {
