@@ -51,6 +51,7 @@ const io = new Server(server, {
 
 let lastMatches = null;
 let intervalId = null;
+let longIntervalId = null;
 let clientsCount = 0;
 
 function startInterval() {
@@ -68,11 +69,29 @@ function stopInterval() {
   }
 }
 
+function startLongInterval() {
+  if (!longIntervalId) {
+    console.log('Starting long interval for updates every 10 minutes');
+    longIntervalId = setInterval(async () => {
+      console.log('Checking for updates every 10 minutes');
+      await checkForUpdates();
+    }, 10 * 60 * 1000); // Проверка на всеки 10 минути
+  }
+}
+
+function stopLongInterval() {
+  if (longIntervalId) {
+    clearInterval(longIntervalId);
+    longIntervalId = null;
+  }
+}
+
 io.on('connection', (socket) => {
   clientsCount++;
   console.log(`Client connected. Total clients: ${clientsCount}`);
 
   startInterval();
+  startLongInterval();
   checkForUpdates();
 
   socket.on('disconnect', () => {
@@ -80,6 +99,7 @@ io.on('connection', (socket) => {
     clientsCount--;
     if (clientsCount === 0) {
       stopInterval();
+      stopLongInterval();
     }
   });
 });
