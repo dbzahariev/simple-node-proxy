@@ -22,6 +22,8 @@ const FOOTBALL_API = {
 async function fetchFootballData(endpoint) {
   try {
     const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/competitions/${FOOTBALL_API.competition}/${endpoint}`;
+    const startTime = Date.now();
+
     const response = await fetch(url, {
       headers: { 'X-Auth-Token': FOOTBALL_API.token },
     });
@@ -29,6 +31,8 @@ async function fetchFootballData(endpoint) {
       throw new Error(`API error: ${response.status}`);
     }
     const data = await response.json();
+    const duration = Date.now() - startTime;
+    console.log(`[API Log] Request to ${endpoint} took ${duration}ms`);
     return { status: response.status, data };
   } catch (error) {
     console.error('fetchFootballData error:', error);
@@ -71,9 +75,9 @@ function stopInterval() {
 
 function startLongInterval() {
   if (!longIntervalId) {
-    console.log('Starting long interval for updates every 10 minutes');
+    console.log('Starting long interval');
     longIntervalId = setInterval(async () => {
-      console.log('Checking for updates every 10 minutes');
+      console.log('Checking for updates long interval.');
       await checkForUpdates();
     }, 10 * 60 * 1000); // Проверка на всеки 10 минути
   }
@@ -91,7 +95,6 @@ io.on('connection', (socket) => {
   console.log(`Client connected. Total clients: ${clientsCount}`);
 
   startInterval();
-  startLongInterval();
   checkForUpdates();
 
   socket.on('disconnect', () => {
@@ -99,10 +102,15 @@ io.on('connection', (socket) => {
     clientsCount--;
     if (clientsCount === 0) {
       stopInterval();
-      stopLongInterval();
     }
   });
 });
+
+// Стартираме дългия интервал веднага, независимо от клиентите
+startLongInterval();
+
+// Извикваме проверката веднага веднъж при стартиране на сървъра
+checkForUpdates();
 
 async function checkForUpdates() {
   try {
