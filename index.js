@@ -73,7 +73,7 @@ function startInterval() {
   if (!intervalId) {
     const runNext = async () => {
       await checkForUpdates();
-      intervalId = setTimeout(runNext, 10 * 1000);
+      intervalId = setTimeout(runNext, 30 * 1000); // 30 seconds
     };
     runNext();
   }
