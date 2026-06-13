@@ -14,6 +14,8 @@ const HAS_UPSTREAM_TIMEOUT = Number.isFinite(UPSTREAM_TIMEOUT_MS) && UPSTREAM_TI
 const ENABLE_CHANGE_DETECTION = ['1', 'true', 'yes', 'on'].includes(
   String(process.env.ENABLE_CHANGE_DETECTION ?? 'false').toLowerCase()
 );
+const SOCKET_TRANSPORT_MODE = String(process.env.SOCKET_TRANSPORT_MODE ?? 'hybrid').toLowerCase();
+const SOCKET_WEBSOCKET_ONLY = SOCKET_TRANSPORT_MODE === 'websocket';
 const POLL_INTERVAL_MS_RAW = Number.parseInt(process.env.POLL_INTERVAL_MS ?? '30000', 10);
 const POLL_INTERVAL_MS = Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0
   ? POLL_INTERVAL_MS_RAW
@@ -164,6 +166,7 @@ app.get('/api/matches/cached', (req, res) => {
 
 const server = http.createServer(app);
 const io = new Server(server, {
+  transports: SOCKET_WEBSOCKET_ONLY ? ['websocket'] : ['polling', 'websocket'],
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
@@ -247,7 +250,11 @@ function startSelfPing() {
 
 io.on('connection', (socket) => {
   clientsCount++;
-  console.log(`Client connected. Total clients: ${clientsCount}`);
+  console.log(`Client connected. Total clients: ${clientsCount}. Transport: ${socket.conn.transport.name}`);
+
+  socket.conn.on('upgrade', () => {
+    console.log(`Client transport upgraded to: ${socket.conn.transport.name}`);
+  });
 
   if (lastMatches) {
     socket.emit('matchesUpdate', lastMatches);
@@ -255,8 +262,8 @@ io.on('connection', (socket) => {
 
   startInterval();
 
-  socket.on('disconnect', () => {
-    console.log('Client disconnected');
+  socket.on('disconnect', (reason) => {
+    console.log(`Client disconnected. Reason: ${reason}`);
     clientsCount--;
     if (clientsCount === 0) {
       stopInterval();
@@ -328,9 +335,11 @@ server.listen(PORT, () => {
   console.log(`  POLL_INTERVAL_MS      = ${process.env.POLL_INTERVAL_MS ?? '(not set, default 30000ms)'}`);
   console.log(`  UPSTREAM_TIMEOUT_MS   = ${process.env.UPSTREAM_TIMEOUT_MS ?? '(not set, default 15000ms)'}`);
   console.log(`  ENABLE_CHANGE_DETECTION = ${process.env.ENABLE_CHANGE_DETECTION ?? '(not set, default false)'}`);
+  console.log(`  SOCKET_TRANSPORT_MODE = ${process.env.SOCKET_TRANSPORT_MODE ?? '(not set, default hybrid)'}`);
   console.log(`  RENDER_EXTERNAL_URL   = ${process.env.RENDER_EXTERNAL_URL ?? '(not set, self-ping disabled)'}`);
   console.log('[Config] Active values:');
   console.log(`  POLL_INTERVAL_MS      → ${POLL_INTERVAL_MS}ms`);
   console.log(`  UPSTREAM_TIMEOUT_MS   → ${HAS_UPSTREAM_TIMEOUT ? `${UPSTREAM_TIMEOUT_MS}ms` : 'disabled'}`);
   console.log(`  ENABLE_CHANGE_DETECTION → ${ENABLE_CHANGE_DETECTION}`);
+  console.log(`  SOCKET_TRANSPORT_MODE → ${SOCKET_WEBSOCKET_ONLY ? 'websocket-only' : 'hybrid (polling + websocket)'}`);
 });
