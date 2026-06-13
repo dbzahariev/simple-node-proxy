@@ -81,7 +81,7 @@ function stripCompetitionFromMatchesPayload(payload) {
       return match;
     }
 
-    const { competition, ...rest } = match;
+    const { competition, area, odds, referees, season, ...rest } = match;
     return rest;
   });
 }
