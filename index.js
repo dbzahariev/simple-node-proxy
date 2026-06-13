@@ -73,27 +73,17 @@ function getMatchesHash(data) {
 
 function stripCompetitionFromMatchesPayload(payload) {
   if (!payload || !Array.isArray(payload.matches)) {
-    return payload;
+    return [];
   }
 
-  const {
-    competition,
-    filters,
-    resultSet,
-    ...sanitizedPayload
-  } = payload;
+  return payload.matches.map((match) => {
+    if (!match || typeof match !== 'object') {
+      return match;
+    }
 
-  return {
-    ...sanitizedPayload,
-    matches: payload.matches.map((match) => {
-      if (!match || typeof match !== 'object') {
-        return match;
-      }
-
-      const { competition, ...rest } = match;
-      return rest;
-    }),
-  };
+    const { competition, ...rest } = match;
+    return rest;
+  });
 }
 
 app.use(cors());
