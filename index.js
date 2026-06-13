@@ -88,7 +88,6 @@ function stripCompetitionFromMatchesPayload(payload) {
       matchday: match.matchday,
       stage: match.stage,
       group: match.group,
-      lastUpdated: match.lastUpdated,
       homeTeam: match.homeTeam
         ? {
             id: match.homeTeam.id,
