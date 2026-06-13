@@ -324,4 +324,13 @@ async function checkForUpdates() {
 
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  console.log('[Config] Environment settings:');
+  console.log(`  POLL_INTERVAL_MS      = ${process.env.POLL_INTERVAL_MS ?? '(not set, default 30000ms)'}`);
+  console.log(`  UPSTREAM_TIMEOUT_MS   = ${process.env.UPSTREAM_TIMEOUT_MS ?? '(not set, default 15000ms)'}`);
+  console.log(`  ENABLE_CHANGE_DETECTION = ${process.env.ENABLE_CHANGE_DETECTION ?? '(not set, default false)'}`);
+  console.log(`  RENDER_EXTERNAL_URL   = ${process.env.RENDER_EXTERNAL_URL ?? '(not set, self-ping disabled)'}`);
+  console.log('[Config] Active values:');
+  console.log(`  POLL_INTERVAL_MS      → ${POLL_INTERVAL_MS}ms`);
+  console.log(`  UPSTREAM_TIMEOUT_MS   → ${HAS_UPSTREAM_TIMEOUT ? `${UPSTREAM_TIMEOUT_MS}ms` : 'disabled'}`);
+  console.log(`  ENABLE_CHANGE_DETECTION → ${ENABLE_CHANGE_DETECTION}`);
 });
