@@ -4,4 +4,4 @@ services:
     env: node
     buildCommand: "npm ci"
     startCommand: "node index.js"
-    nodeVersion: 18
+    nodeVersion: 22

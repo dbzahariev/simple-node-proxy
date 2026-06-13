@@ -1,12 +1,73 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const http = require('http');
 const { Server } = require('socket.io');
 const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+const METRICS_SAMPLE_SIZE = 200;
+const METRICS_LOG_EVERY_CHECKS = 20;
+const UPSTREAM_TIMEOUT_MS = Number.parseInt(process.env.UPSTREAM_TIMEOUT_MS ?? '15000', 10);
+const HAS_UPSTREAM_TIMEOUT = Number.isFinite(UPSTREAM_TIMEOUT_MS) && UPSTREAM_TIMEOUT_MS > 0;
+const ENABLE_CHANGE_DETECTION = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.ENABLE_CHANGE_DETECTION ?? 'false').toLowerCase()
+);
+const POLL_INTERVAL_MS_RAW = Number.parseInt(process.env.POLL_INTERVAL_MS ?? '30000', 10);
+const POLL_INTERVAL_MS = Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0
+  ? POLL_INTERVAL_MS_RAW
+  : 30000;
+
+const runtimeMetrics = {
+  upstreamFetchMs: [],
+  checkCycleMs: [],
+  apiFetchMs: [],
+  wsEmits: 0,
+  cacheHits: 0,
+  checks: 0,
+};
+
+function pushMetricSample(samples, value) {
+  if (!Number.isFinite(value)) return;
+  samples.push(value);
+  if (samples.length > METRICS_SAMPLE_SIZE) {
+    samples.shift();
+  }
+}
+
+function percentile(samples, p) {
+  if (!samples.length) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+}
+
+function formatLatencySummary(label, samples) {
+  if (!samples.length) {
+    return `${label}: n/a`;
+  }
+
+  const p50 = percentile(samples, 50);
+  const p95 = percentile(samples, 95);
+  return `${label}: p50=${Math.round(p50)}ms p95=${Math.round(p95)}ms n=${samples.length}`;
+}
+
+function logRuntimeMetricsSummary() {
+  const parts = [
+    formatLatencySummary('upstream', runtimeMetrics.upstreamFetchMs),
+    formatLatencySummary('checkCycle', runtimeMetrics.checkCycleMs),
+    formatLatencySummary('apiFetch', runtimeMetrics.apiFetchMs),
+    `wsEmits=${runtimeMetrics.wsEmits}`,
+    `cacheHits=${runtimeMetrics.cacheHits}`,
+  ];
+
+  console.log(`[Metrics] ${parts.join(' | ')}`);
+}
+
+function getMatchesHash(data) {
+  return crypto.createHash('md5').update(JSON.stringify(data)).digest('hex');
+}
 
 app.use(cors());
 
@@ -19,12 +80,13 @@ const FOOTBALL_API = {
 
 async function fetchFootballData(endpoint) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000); // 15 секунди таймаут
+  const timeout = HAS_UPSTREAM_TIMEOUT
+    ? setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
+    : null;
+  const startTime = Date.now();
 
   try {
     const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/competitions/${FOOTBALL_API.competition}/${endpoint}`;
-    const startTime = Date.now();
-
     const response = await fetch(url, {
       headers: { 'X-Auth-Token': FOOTBALL_API.token },
       signal: controller.signal,
@@ -34,14 +96,19 @@ async function fetchFootballData(endpoint) {
     }
     const data = await response.json();
     const duration = Date.now() - startTime;
+    pushMetricSample(runtimeMetrics.upstreamFetchMs, duration);
     console.log(`[API Log] Request to ${endpoint} took ${duration}ms`);
-    return { status: response.status, data };
+    return { status: response.status, data, durationMs: duration };
   } catch (error) {
     const errorMsg = error.name === 'AbortError' ? 'Request timed out' : error.message;
+    const duration = Date.now() - startTime;
+    pushMetricSample(runtimeMetrics.upstreamFetchMs, duration);
     console.error(`[API Error] ${endpoint}:`, errorMsg);
-    return { status: 500, data: { error: errorMsg } };
+    return { status: 500, data: { error: errorMsg }, durationMs: duration };
   } finally {
-    clearTimeout(timeout);
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 
@@ -51,8 +118,48 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/matches', async (req, res) => {
+  const now = Date.now();
+
+  if (lastMatches && now - lastMatchesFetchedAt < MATCHES_CACHE_TTL_MS) {
+    runtimeMetrics.cacheHits++;
+    return res.status(200).json(lastMatches);
+  }
+
   const result = await fetchFootballData('matches');
+  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+
+  if (result.status === 200) {
+    lastMatches = result.data;
+    if (ENABLE_CHANGE_DETECTION) {
+      lastMatchesHash = getMatchesHash(lastMatches);
+    }
+    lastMatchesFetchedAt = Date.now();
+    return res.status(200).json(lastMatches);
+  }
+
+  if (lastMatches) {
+    res.set('X-Data-Source', 'stale-cache');
+    return res.status(200).json(lastMatches);
+  }
+
   res.status(result.status).json(result.data);
+});
+
+// Cache-only endpoint: returns immediately and never calls the upstream API.
+app.get('/api/matches/cached', (req, res) => {
+  if (!lastMatches) {
+    return res.status(503).json({
+      message: 'No cached matches available yet',
+      cached: false,
+    });
+  }
+
+  res.set('X-Data-Source', 'cache-only');
+  res.status(200).json({
+    cached: true,
+    fetchedAt: new Date(lastMatchesFetchedAt).toISOString(),
+    data: lastMatches,
+  });
 });
 
 const server = http.createServer(app);
@@ -65,15 +172,20 @@ const io = new Server(server, {
 
 let lastMatches = null;
 let lastMatchesHash = '';
+let lastMatchesFetchedAt = 0;
 let intervalId = null;
 let longIntervalId = null;
 let clientsCount = 0;
+let isCheckingUpdates = false;
+let rerunUpdateCheck = false;
+
+const MATCHES_CACHE_TTL_MS = 15 * 1000;
 
 function startInterval() {
   if (!intervalId) {
     const runNext = async () => {
       await checkForUpdates();
-      intervalId = setTimeout(runNext, 30 * 1000); // 30 seconds
+      intervalId = setTimeout(runNext, POLL_INTERVAL_MS);
     };
     runNext();
   }
@@ -137,8 +249,11 @@ io.on('connection', (socket) => {
   clientsCount++;
   console.log(`Client connected. Total clients: ${clientsCount}`);
 
+  if (lastMatches) {
+    socket.emit('matchesUpdate', lastMatches);
+  }
+
   startInterval();
-  checkForUpdates();
 
   socket.on('disconnect', () => {
     console.log('Client disconnected');
@@ -159,26 +274,51 @@ startSelfPing();
 checkForUpdates();
 
 async function checkForUpdates() {
+  if (isCheckingUpdates) {
+    rerunUpdateCheck = true;
+    return;
+  }
+
+  isCheckingUpdates = true;
+  const checkStartedAt = Date.now();
+
   try {
     const result = await fetchFootballData('matches');
     
     if (result.status === 200) {
-      // Create a hash of the new data to compare efficiently
-      const currentDataStr = JSON.stringify(result.data);
-      const currentHash = crypto.createHash('md5').update(currentDataStr).digest('hex');
+      lastMatches = result.data;
+      lastMatchesFetchedAt = Date.now();
 
-      if (currentHash !== lastMatchesHash) {
-        lastMatches = result.data;
-        lastMatchesHash = currentHash;
+      if (ENABLE_CHANGE_DETECTION) {
+        const currentHash = getMatchesHash(lastMatches);
+        if (currentHash !== lastMatchesHash) {
+          lastMatchesHash = currentHash;
+          io.emit('matchesUpdate', lastMatches);
+          runtimeMetrics.wsEmits++;
+        }
+      } else {
+        io.emit('matchesUpdate', lastMatches);
+        runtimeMetrics.wsEmits++;
       }
-      
-      // Use volatile to avoid memory bloat from slow clients
-      io.volatile.emit('matchesUpdate', lastMatches);
-    } else if (lastMatches) {
-      io.volatile.emit('matchesUpdate', lastMatches);
     }
   } catch (error) {
-    io.volatile.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
+    io.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
+    runtimeMetrics.wsEmits++;
+  } finally {
+    isCheckingUpdates = false;
+    pushMetricSample(runtimeMetrics.checkCycleMs, Date.now() - checkStartedAt);
+    runtimeMetrics.checks++;
+
+    if (runtimeMetrics.checks % METRICS_LOG_EVERY_CHECKS === 0) {
+      logRuntimeMetricsSummary();
+    }
+
+    if (rerunUpdateCheck) {
+      rerunUpdateCheck = false;
+      setImmediate(() => {
+        checkForUpdates();
+      });
+    }
   }
 }
 
