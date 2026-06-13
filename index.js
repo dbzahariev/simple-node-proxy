@@ -81,8 +81,28 @@ function stripCompetitionFromMatchesPayload(payload) {
       return match;
     }
 
-    const { competition, area, odds, referees, season, ...rest } = match;
-    return rest;
+    return {
+      id: match.id,
+      utcDate: match.utcDate,
+      status: match.status,
+      matchday: match.matchday,
+      stage: match.stage,
+      group: match.group,
+      lastUpdated: match.lastUpdated,
+      homeTeam: match.homeTeam
+        ? {
+            id: match.homeTeam.id,
+            name: match.homeTeam.name,
+          }
+        : null,
+      awayTeam: match.awayTeam
+        ? {
+            id: match.awayTeam.id,
+            name: match.awayTeam.name,
+          }
+        : null,
+      score: match.score,
+    };
   });
 }
 
