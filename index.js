@@ -71,6 +71,24 @@ function getMatchesHash(data) {
   return crypto.createHash('md5').update(JSON.stringify(data)).digest('hex');
 }
 
+function stripCompetitionFromMatchesPayload(payload) {
+  if (!payload || !Array.isArray(payload.matches)) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    matches: payload.matches.map((match) => {
+      if (!match || typeof match !== 'object') {
+        return match;
+      }
+
+      const { competition, ...rest } = match;
+      return rest;
+    }),
+  };
+}
+
 app.use(cors());
 
 const FOOTBALL_API = {
@@ -124,7 +142,7 @@ app.get('/api/matches', async (req, res) => {
 
   if (lastMatches && now - lastMatchesFetchedAt < MATCHES_CACHE_TTL_MS) {
     runtimeMetrics.cacheHits++;
-    return res.status(200).json(lastMatches);
+    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
   }
 
   const result = await fetchFootballData('matches');
@@ -136,12 +154,12 @@ app.get('/api/matches', async (req, res) => {
       lastMatchesHash = getMatchesHash(lastMatches);
     }
     lastMatchesFetchedAt = Date.now();
-    return res.status(200).json(lastMatches);
+    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
   }
 
   if (lastMatches) {
     res.set('X-Data-Source', 'stale-cache');
-    return res.status(200).json(lastMatches);
+    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
   }
 
   res.status(result.status).json(result.data);
@@ -160,7 +178,7 @@ app.get('/api/matches/cached', (req, res) => {
   res.status(200).json({
     cached: true,
     fetchedAt: new Date(lastMatchesFetchedAt).toISOString(),
-    data: lastMatches,
+    data: stripCompetitionFromMatchesPayload(lastMatches),
   });
 });
 
@@ -257,7 +275,7 @@ io.on('connection', (socket) => {
   });
 
   if (lastMatches) {
-    socket.emit('matchesUpdate', lastMatches);
+    socket.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
   }
 
   startInterval();
@@ -300,11 +318,11 @@ async function checkForUpdates() {
         const currentHash = getMatchesHash(lastMatches);
         if (currentHash !== lastMatchesHash) {
           lastMatchesHash = currentHash;
-          io.emit('matchesUpdate', lastMatches);
+          io.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
           runtimeMetrics.wsEmits++;
         }
       } else {
-        io.emit('matchesUpdate', lastMatches);
+        io.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
         runtimeMetrics.wsEmits++;
       }
     }
