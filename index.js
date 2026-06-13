@@ -76,10 +76,15 @@ function stripCompetitionFromMatchesPayload(payload) {
     return payload;
   }
 
-  const { competition, ...payloadWithoutCompetition } = payload;
+  const {
+    competition,
+    filters,
+    resultSet,
+    ...sanitizedPayload
+  } = payload;
 
   return {
-    ...payloadWithoutCompetition,
+    ...sanitizedPayload,
     matches: payload.matches.map((match) => {
       if (!match || typeof match !== 'object') {
         return match;
