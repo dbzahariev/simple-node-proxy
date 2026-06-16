@@ -17,9 +17,10 @@ const ENABLE_CHANGE_DETECTION = ['1', 'true', 'yes', 'on'].includes(
 const SOCKET_TRANSPORT_MODE = String(process.env.SOCKET_TRANSPORT_MODE ?? 'hybrid').toLowerCase();
 const SOCKET_WEBSOCKET_ONLY = SOCKET_TRANSPORT_MODE === 'websocket';
 const POLL_INTERVAL_MS_RAW = Number.parseInt(process.env.POLL_INTERVAL_MS ?? '30000', 10);
+const POLL_INTERVAL_MS_MIN = 30000;
 const POLL_INTERVAL_MS = Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0
-  ? POLL_INTERVAL_MS_RAW
-  : 30000;
+  ? Math.max(POLL_INTERVAL_MS_RAW, POLL_INTERVAL_MS_MIN)
+  : POLL_INTERVAL_MS_MIN;
 
 const runtimeMetrics = {
   upstreamFetchMs: [],
@@ -365,6 +366,9 @@ async function checkForUpdates() {
 
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  if (Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0 && POLL_INTERVAL_MS_RAW < POLL_INTERVAL_MS_MIN) {
+    console.log(`[Config] POLL_INTERVAL_MS was set to ${POLL_INTERVAL_MS_RAW}ms and has been clamped to ${POLL_INTERVAL_MS}ms (minimum ${POLL_INTERVAL_MS_MIN}ms)`);
+  }
   console.log('[Config] Environment settings:');
   console.log(`  POLL_INTERVAL_MS      = ${process.env.POLL_INTERVAL_MS ?? '(not set, default 30000ms)'}`);
   console.log(`  UPSTREAM_TIMEOUT_MS   = ${process.env.UPSTREAM_TIMEOUT_MS ?? '(not set, default 15000ms)'}`);

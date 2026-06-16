@@ -5,3 +5,8 @@ services:
     buildCommand: "npm ci"
     startCommand: "node index.js"
     nodeVersion: 22
+    envVars:
+      - key: POLL_INTERVAL_MS
+        value: "30000"
+      - key: ENABLE_CHANGE_DETECTION
+        value: "true"
