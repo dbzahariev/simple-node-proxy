@@ -214,19 +214,32 @@ let lastMatchesFetchedAt = 0;
 let intervalId = null;
 let longIntervalId = null;
 let clientsCount = 0;
+let isPollingLoopStarted = false;
 let isCheckingUpdates = false;
 let rerunUpdateCheck = false;
 
 const MATCHES_CACHE_TTL_MS = 15 * 1000;
 
 function startInterval() {
-  if (!intervalId) {
-    const runNext = async () => {
-      await checkForUpdates();
-      intervalId = setTimeout(runNext, POLL_INTERVAL_MS);
-    };
-    runNext();
+  if (isPollingLoopStarted) {
+    return;
   }
+
+  isPollingLoopStarted = true;
+
+  const runNext = async () => {
+    await checkForUpdates();
+
+    if (clientsCount === 0) {
+      intervalId = null;
+      isPollingLoopStarted = false;
+      return;
+    }
+
+    intervalId = setTimeout(runNext, POLL_INTERVAL_MS);
+  };
+
+  runNext();
 }
 
 function stopInterval() {
@@ -234,6 +247,8 @@ function stopInterval() {
     clearTimeout(intervalId);
     intervalId = null;
   }
+
+  isPollingLoopStarted = false;
 }
 
 function startLongInterval() {
