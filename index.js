@@ -229,6 +229,19 @@ app.get('/api/matches/live', async (req, res) => {
   res.status(result.status).json(result.data);
 });
 
+app.get('/api/matches/live/full', async (req, res) => {
+  const result = await fetchLiveMatchesDelta();
+  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+  applyRateLimitHints(result);
+
+  if (result.status === 200) {
+    const delta = stripCompetitionFromMatchesPayload(result.data);
+    return res.status(200).json(delta);
+  }
+
+  res.status(result.status).json(result.data);
+});
+
 app.get('/api/matches/:id', async (req, res) => {
   const matchIdRaw = req.params.id;
   const matchId = Number.parseInt(matchIdRaw, 10);
