@@ -110,6 +110,12 @@ function stripCompetitionFromMatchesPayload(payload) {
 }
 
 app.use(cors());
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
 
 const FOOTBALL_API = {
   version: 'v4',
