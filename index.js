@@ -21,6 +21,8 @@ const POLL_INTERVAL_MS_MIN = 30000;
 const POLL_INTERVAL_MS = Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0
   ? Math.max(POLL_INTERVAL_MS_RAW, POLL_INTERVAL_MS_MIN)
   : POLL_INTERVAL_MS_MIN;
+const BASELINE_REFRESH_MS = Number.parseInt(process.env.BASELINE_REFRESH_MS ?? '300000', 10);
+const LIVE_STATUS_REFRESH_QUERY = 'matches?competitions=2000&status=LIVE,TIMED';
 
 const runtimeMetrics = {
   upstreamFetchMs: [],
@@ -85,6 +87,7 @@ function stripCompetitionFromMatchesPayload(payload) {
     return {
       id: match.id,
       utcDate: match.utcDate,
+      lastUpdated: match.lastUpdated ?? null,
       status: match.status,
       matchday: match.matchday,
       stage: match.stage,
@@ -115,7 +118,17 @@ const FOOTBALL_API = {
   token: 'c8d23279fec54671a43fcd93068762d1', // Replace with a valid token if needed
 };
 
-async function fetchFootballData(endpoint) {
+function parseIntHeader(value) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function fetchFootballData(path, options = {}) {
+  const unfoldLineups = options.unfoldLineups === true;
+  const unfoldBookings = options.unfoldBookings === true;
+  const unfoldSubs = options.unfoldSubs === true;
+  const unfoldGoals = options.unfoldGoals === true;
+
   const controller = new AbortController();
   const timeout = HAS_UPSTREAM_TIMEOUT
     ? setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS)
@@ -123,25 +136,50 @@ async function fetchFootballData(endpoint) {
   const startTime = Date.now();
 
   try {
-    const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/competitions/${FOOTBALL_API.competition}/${endpoint}`;
+    const normalizedPath = String(path).replace(/^\/+/, '');
+    const url = `${FOOTBALL_API.baseUrl}/${FOOTBALL_API.version}/${normalizedPath}`;
     const response = await fetch(url, {
-      headers: { 'X-Auth-Token': FOOTBALL_API.token },
+      headers: {
+        'X-Auth-Token': FOOTBALL_API.token,
+        'X-Unfold-Lineups': String(unfoldLineups),
+        'X-Unfold-Bookings': String(unfoldBookings),
+        'X-Unfold-Subs': String(unfoldSubs),
+        'X-Unfold-Goals': String(unfoldGoals),
+      },
       signal: controller.signal,
     });
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      data = { error: `Unexpected non-JSON response (HTTP ${response.status})` };
     }
-    const data = await response.json();
+
     const duration = Date.now() - startTime;
     pushMetricSample(runtimeMetrics.upstreamFetchMs, duration);
-    console.log(`[API Log] Request to ${endpoint} took ${duration}ms`);
-    return { status: response.status, data, durationMs: duration };
+    console.log(`[API Log] Request to ${normalizedPath} took ${duration}ms (status=${response.status})`);
+
+    return {
+      status: response.status,
+      data,
+      durationMs: duration,
+      rate: {
+        available: parseIntHeader(response.headers.get('X-RequestsAvailable')),
+        resetSeconds: parseIntHeader(response.headers.get('X-RequestCounter-Reset')),
+      },
+    };
   } catch (error) {
     const errorMsg = error.name === 'AbortError' ? 'Request timed out' : error.message;
     const duration = Date.now() - startTime;
     pushMetricSample(runtimeMetrics.upstreamFetchMs, duration);
-    console.error(`[API Error] ${endpoint}:`, errorMsg);
-    return { status: 500, data: { error: errorMsg }, durationMs: duration };
+    console.error(`[API Error] ${path}:`, errorMsg);
+    return {
+      status: 500,
+      data: { error: errorMsg },
+      durationMs: duration,
+      rate: { available: null, resetSeconds: null },
+    };
   } finally {
     if (timeout) {
       clearTimeout(timeout);
@@ -155,19 +193,59 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/matches', async (req, res) => {
-  const result = await fetchFootballData('matches');
+  const result = await fetchFootballData(`competitions/${FOOTBALL_API.competition}/matches`);
   pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+  applyRateLimitHints(result);
 
   if (result.status === 200) {
     const matchesPayload = stripCompetitionFromMatchesPayload(result.data);
-    if (ENABLE_CHANGE_DETECTION) {
-      lastMatchesHash = getMatchesHash(result.data);
-    }
+    console.log('[API /api/matches] Returning matches payload:', JSON.stringify(matchesPayload, null, 2));
+    replaceSnapshot(matchesPayload);
     lastMatchesFetchedAt = Date.now();
     return res.status(200).json(matchesPayload);
   }
 
   res.status(result.status).json(result.data);
+});
+
+app.get('/api/matches/live', async (req, res) => {
+  const result = await fetchLiveMatchesDelta();
+  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+  applyRateLimitHints(result);
+
+  if (result.status === 200) {
+    const delta = stripCompetitionFromMatchesPayload(result.data);
+    return res.status(200).json(delta);
+  }
+
+  res.status(result.status).json(result.data);
+});
+
+app.get('/api/matches/:id', async (req, res) => {
+  const matchIdRaw = req.params.id;
+  const matchId = Number.parseInt(matchIdRaw, 10);
+
+  if (!Number.isFinite(matchId) || matchId <= 0) {
+    return res.status(400).json({
+      error: 'Invalid match id. Expected a positive integer.',
+    });
+  }
+
+  const result = await fetchFootballData(`matches/${matchId}`, {
+    unfoldLineups: true,
+    unfoldBookings: true,
+    unfoldSubs: true,
+    unfoldGoals: true,
+  });
+
+  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+  applyRateLimitHints(result);
+
+  if (result.status === 200) {
+    return res.status(200).json(result.data);
+  }
+
+  return res.status(result.status).json(result.data);
 });
 
 app.get('/api/matches/cached', (req, res) => {
@@ -187,12 +265,128 @@ const io = new Server(server, {
 
 let lastMatchesHash = '';
 let lastMatchesFetchedAt = 0;
+let lastBaselineRefreshAt = 0;
+let trackedMatchIds = [];
+let pollIntervalDynamicMs = POLL_INTERVAL_MS;
+let nextPollNotBeforeTs = 0;
+let retryBackoffMs = 0;
+const snapshotById = new Map();
 let intervalId = null;
 let longIntervalId = null;
 let clientsCount = 0;
 let isPollingLoopStarted = false;
 let isCheckingUpdates = false;
 let rerunUpdateCheck = false;
+
+function statusSetContains(statuses, status) {
+  return statuses.includes(String(status || '').toUpperCase());
+}
+
+function extractTrackedMatchIds(matches) {
+  const now = Date.now();
+  return matches
+    .filter((match) => {
+      const status = String(match?.status || '').toUpperCase();
+      if (statusSetContains(['IN_PLAY', 'PAUSED', 'TIMED', 'SCHEDULED'], status)) {
+        return true;
+      }
+
+      if (!statusSetContains(['FINISHED', 'AWARDED'], status)) {
+        return false;
+      }
+
+      if (!match?.lastUpdated) {
+        return false;
+      }
+
+      const lastUpdatedTs = Date.parse(match.lastUpdated);
+      return Number.isFinite(lastUpdatedTs) && now - lastUpdatedTs <= 30 * 60 * 1000;
+    })
+    .map((match) => match.id)
+    .filter((id) => Number.isFinite(id));
+}
+
+function sortMatchesForEmission(matches) {
+  return [...matches].sort((a, b) => {
+    const left = String(a?.utcDate || '');
+    const right = String(b?.utcDate || '');
+    return left.localeCompare(right) || (a?.id ?? 0) - (b?.id ?? 0);
+  });
+}
+
+function getSnapshotMatchesSorted() {
+  return sortMatchesForEmission(Array.from(snapshotById.values()));
+}
+
+function replaceSnapshot(matches) {
+  snapshotById.clear();
+  for (const match of matches) {
+    if (match && Number.isFinite(match.id)) {
+      snapshotById.set(match.id, match);
+    }
+  }
+  trackedMatchIds = extractTrackedMatchIds(matches);
+  lastBaselineRefreshAt = Date.now();
+}
+
+function mergeSnapshot(deltaMatches) {
+  for (const match of deltaMatches) {
+    if (match && Number.isFinite(match.id)) {
+      snapshotById.set(match.id, match);
+    }
+  }
+  trackedMatchIds = extractTrackedMatchIds(getSnapshotMatchesSorted());
+}
+
+function applyRateLimitHints(result) {
+  const available = result?.rate?.available;
+  const resetSeconds = result?.rate?.resetSeconds;
+
+  if (result?.status === 429) {
+    const waitMs = Math.max(30000, ((Number.isFinite(resetSeconds) ? resetSeconds : 60) + 1) * 1000);
+    retryBackoffMs = Math.min(Math.max(retryBackoffMs * 2 || waitMs, waitMs), 5 * 60 * 1000);
+    nextPollNotBeforeTs = Date.now() + retryBackoffMs;
+    pollIntervalDynamicMs = Math.max(POLL_INTERVAL_MS, retryBackoffMs);
+    console.warn(`[RateLimit] 429 received. Backing off for ${Math.round(retryBackoffMs / 1000)}s`);
+    return;
+  }
+
+  if (result?.status >= 500) {
+    retryBackoffMs = Math.min(Math.max(retryBackoffMs * 2 || POLL_INTERVAL_MS, POLL_INTERVAL_MS), 5 * 60 * 1000);
+    nextPollNotBeforeTs = Date.now() + retryBackoffMs;
+    pollIntervalDynamicMs = Math.max(POLL_INTERVAL_MS, retryBackoffMs);
+    return;
+  }
+
+  retryBackoffMs = 0;
+  nextPollNotBeforeTs = 0;
+  pollIntervalDynamicMs = POLL_INTERVAL_MS;
+
+  if (Number.isFinite(available) && Number.isFinite(resetSeconds) && available <= 2) {
+    pollIntervalDynamicMs = Math.max(POLL_INTERVAL_MS, (resetSeconds + 1) * 1000);
+    console.warn(`[RateLimit] Low remaining quota (${available}), temporary poll=${pollIntervalDynamicMs}ms`);
+  }
+}
+
+function isBaselineRefreshDue() {
+  if (!Number.isFinite(lastBaselineRefreshAt) || lastBaselineRefreshAt === 0) {
+    return true;
+  }
+
+  return Date.now() - lastBaselineRefreshAt >= BASELINE_REFRESH_MS;
+}
+
+async function fetchCompetitionSnapshot() {
+  return fetchFootballData(`competitions/${FOOTBALL_API.competition}/matches`);
+}
+
+async function fetchLiveMatchesDelta() {
+  if (trackedMatchIds.length > 0) {
+    return fetchFootballData(`matches?ids=${trackedMatchIds.join(',')}`);
+  }
+
+  return fetchFootballData(LIVE_STATUS_REFRESH_QUERY);
+}
 
 function startInterval() {
   if (isPollingLoopStarted) {
@@ -210,7 +404,7 @@ function startInterval() {
       return;
     }
 
-    intervalId = setTimeout(runNext, POLL_INTERVAL_MS);
+    intervalId = setTimeout(runNext, pollIntervalDynamicMs);
   };
 
   runNext();
@@ -306,31 +500,48 @@ async function checkForUpdates() {
     return;
   }
 
+  if (nextPollNotBeforeTs > Date.now()) {
+    return;
+  }
+
   isCheckingUpdates = true;
   const checkStartedAt = Date.now();
 
   try {
-    const result = await fetchFootballData('matches');
+    const shouldRefreshBaseline = isBaselineRefreshDue() || snapshotById.size === 0;
+    const result = shouldRefreshBaseline
+      ? await fetchCompetitionSnapshot()
+      : await fetchLiveMatchesDelta();
+    applyRateLimitHints(result);
     
     if (result.status === 200) {
       lastMatchesFetchedAt = Date.now();
-      const currentHash = getMatchesHash(result.data);
-      const matchesPayload = stripCompetitionFromMatchesPayload(result.data);
+      const payload = stripCompetitionFromMatchesPayload(result.data);
+
+      if (shouldRefreshBaseline) {
+        replaceSnapshot(payload);
+      } else {
+        mergeSnapshot(payload);
+      }
+
+      const fullSnapshot = getSnapshotMatchesSorted();
+      const currentHash = getMatchesHash(fullSnapshot);
 
       if (ENABLE_CHANGE_DETECTION) {
         if (currentHash !== lastMatchesHash) {
           lastMatchesHash = currentHash;
-          io.emit('matchesUpdate', matchesPayload);
+          io.emit('matchesUpdate', fullSnapshot);
           runtimeMetrics.wsEmits++;
         }
       } else {
-        io.emit('matchesUpdate', matchesPayload);
+        io.emit('matchesUpdate', fullSnapshot);
         runtimeMetrics.wsEmits++;
       }
+    } else {
+      console.warn(`[Polling] Upstream non-200 status=${result.status}`);
     }
   } catch (error) {
-    io.emit('matchesUpdate', { message: 'Failed to fetch match updates', details: error.message });
-    runtimeMetrics.wsEmits++;
+    console.error('[Polling] Failed to fetch updates:', error.message);
   } finally {
     isCheckingUpdates = false;
     pushMetricSample(runtimeMetrics.checkCycleMs, Date.now() - checkStartedAt);
@@ -356,12 +567,14 @@ server.listen(PORT, () => {
   }
   console.log('[Config] Environment settings:');
   console.log(`  POLL_INTERVAL_MS      = ${process.env.POLL_INTERVAL_MS ?? '(not set, default 30000ms)'}`);
+  console.log(`  BASELINE_REFRESH_MS   = ${process.env.BASELINE_REFRESH_MS ?? '(not set, default 300000ms)'}`);
   console.log(`  UPSTREAM_TIMEOUT_MS   = ${process.env.UPSTREAM_TIMEOUT_MS ?? '(not set, default 15000ms)'}`);
   console.log(`  ENABLE_CHANGE_DETECTION = ${process.env.ENABLE_CHANGE_DETECTION ?? '(not set, default false)'}`);
   console.log(`  SOCKET_TRANSPORT_MODE = ${process.env.SOCKET_TRANSPORT_MODE ?? '(not set, default hybrid)'}`);
   console.log(`  RENDER_EXTERNAL_URL   = ${process.env.RENDER_EXTERNAL_URL ?? '(not set, self-ping disabled)'}`);
   console.log('[Config] Active values:');
   console.log(`  POLL_INTERVAL_MS      → ${POLL_INTERVAL_MS}ms`);
+  console.log(`  BASELINE_REFRESH_MS   → ${BASELINE_REFRESH_MS}ms`);
   console.log(`  UPSTREAM_TIMEOUT_MS   → ${HAS_UPSTREAM_TIMEOUT ? `${UPSTREAM_TIMEOUT_MS}ms` : 'disabled'}`);
   console.log(`  ENABLE_CHANGE_DETECTION → ${ENABLE_CHANGE_DETECTION}`);
   console.log(`  SOCKET_TRANSPORT_MODE → ${SOCKET_WEBSOCKET_ONLY ? 'websocket-only' : 'hybrid (polling + websocket)'}`);
