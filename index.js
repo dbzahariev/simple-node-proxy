@@ -220,7 +220,9 @@ app.get('/api/matches/live', async (req, res) => {
   applyRateLimitHints(result);
 
   if (result.status === 200) {
-    const delta = stripCompetitionFromMatchesPayload(result.data);
+    const liveStatuses = ['IN_PLAY', 'PAUSED', 'TIMED', 'SCHEDULED', 'EXTRA_TIME', 'PENALTY_SHOOTOUT'];
+    const delta = stripCompetitionFromMatchesPayload(result.data)
+      .filter((match) => liveStatuses.includes(String(match?.status || '').toUpperCase()));
     return res.status(200).json(delta);
   }
 
@@ -311,24 +313,10 @@ function statusSetContains(statuses, status) {
 }
 
 function extractTrackedMatchIds(matches) {
-  const now = Date.now();
   return matches
     .filter((match) => {
       const status = String(match?.status || '').toUpperCase();
-      if (statusSetContains(['IN_PLAY', 'PAUSED', 'TIMED', 'SCHEDULED'], status)) {
-        return true;
-      }
-
-      if (!statusSetContains(['FINISHED', 'AWARDED'], status)) {
-        return false;
-      }
-
-      if (!match?.lastUpdated) {
-        return false;
-      }
-
-      const lastUpdatedTs = Date.parse(match.lastUpdated);
-      return Number.isFinite(lastUpdatedTs) && now - lastUpdatedTs <= 30 * 60 * 1000;
+      return statusSetContains(['IN_PLAY', 'PAUSED', 'TIMED', 'SCHEDULED'], status);
     })
     .map((match) => match.id)
     .filter((id) => Number.isFinite(id));
