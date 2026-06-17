@@ -236,7 +236,8 @@ app.get('/api/matches/live/full', async (req, res) => {
 
   if (result.status === 200) {
     const delta = stripCompetitionFromMatchesPayload(result.data);
-    return res.status(200).json(delta);
+    mergeSnapshot(delta);
+    return res.status(200).json(getSnapshotMatchesSorted());
   }
 
   res.status(result.status).json(result.data);
