@@ -237,21 +237,43 @@ app.get('/api/matches/:id', async (req, res) => {
     });
   }
 
-  const result = await fetchFootballData(`matches/${matchId}`, {
+  const baseResult = await fetchFootballData(`matches/${matchId}`);
+  pushMetricSample(runtimeMetrics.apiFetchMs, baseResult.durationMs);
+  applyRateLimitHints(baseResult);
+
+  if (baseResult.status !== 200) {
+    return res.status(baseResult.status).json(baseResult.data);
+  }
+
+  const status = String(baseResult.data?.status || '').toUpperCase();
+  const needsExpandedDetails = [
+    'IN_PLAY',
+    'PAUSED',
+    'FINISHED',
+    'AWARDED',
+    'EXTRA_TIME',
+    'PENALTY_SHOOTOUT',
+  ].includes(status);
+
+  if (!needsExpandedDetails) {
+    return res.status(200).json(baseResult.data);
+  }
+
+  const expandedResult = await fetchFootballData(`matches/${matchId}`, {
     unfoldLineups: true,
     unfoldBookings: true,
     unfoldSubs: true,
     unfoldGoals: true,
   });
 
-  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
-  applyRateLimitHints(result);
+  pushMetricSample(runtimeMetrics.apiFetchMs, expandedResult.durationMs);
+  applyRateLimitHints(expandedResult);
 
-  if (result.status === 200) {
-    return res.status(200).json(result.data);
+  if (expandedResult.status === 200) {
+    return res.status(200).json(expandedResult.data);
   }
 
-  return res.status(result.status).json(result.data);
+  return res.status(expandedResult.status).json(expandedResult.data);
 });
 
 app.get('/api/matches/cached', (req, res) => {
