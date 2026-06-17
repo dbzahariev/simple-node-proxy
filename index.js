@@ -155,47 +155,24 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/matches', async (req, res) => {
-  const now = Date.now();
-
-  if (lastMatches && now - lastMatchesFetchedAt < MATCHES_CACHE_TTL_MS) {
-    runtimeMetrics.cacheHits++;
-    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
-  }
-
   const result = await fetchFootballData('matches');
   pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
 
   if (result.status === 200) {
-    lastMatches = result.data;
+    const matchesPayload = stripCompetitionFromMatchesPayload(result.data);
     if (ENABLE_CHANGE_DETECTION) {
-      lastMatchesHash = getMatchesHash(lastMatches);
+      lastMatchesHash = getMatchesHash(result.data);
     }
     lastMatchesFetchedAt = Date.now();
-    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
-  }
-
-  if (lastMatches) {
-    res.set('X-Data-Source', 'stale-cache');
-    return res.status(200).json(stripCompetitionFromMatchesPayload(lastMatches));
+    return res.status(200).json(matchesPayload);
   }
 
   res.status(result.status).json(result.data);
 });
 
-// Cache-only endpoint: returns immediately and never calls the upstream API.
 app.get('/api/matches/cached', (req, res) => {
-  if (!lastMatches) {
-    return res.status(503).json({
-      message: 'No cached matches available yet',
-      cached: false,
-    });
-  }
-
-  res.set('X-Data-Source', 'cache-only');
-  res.status(200).json({
-    cached: true,
-    fetchedAt: new Date(lastMatchesFetchedAt).toISOString(),
-    data: stripCompetitionFromMatchesPayload(lastMatches),
+  res.status(410).json({
+    message: 'Cached match responses are disabled. Use /api/matches for a fresh upstream fetch.',
   });
 });
 
@@ -208,7 +185,6 @@ const io = new Server(server, {
   },
 });
 
-let lastMatches = null;
 let lastMatchesHash = '';
 let lastMatchesFetchedAt = 0;
 let intervalId = null;
@@ -217,8 +193,6 @@ let clientsCount = 0;
 let isPollingLoopStarted = false;
 let isCheckingUpdates = false;
 let rerunUpdateCheck = false;
-
-const MATCHES_CACHE_TTL_MS = 15 * 1000;
 
 function startInterval() {
   if (isPollingLoopStarted) {
@@ -306,10 +280,6 @@ io.on('connection', (socket) => {
     console.log(`Client transport upgraded to: ${socket.conn.transport.name}`);
   });
 
-  if (lastMatches) {
-    socket.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
-  }
-
   startInterval();
 
   socket.on('disconnect', (reason) => {
@@ -343,18 +313,18 @@ async function checkForUpdates() {
     const result = await fetchFootballData('matches');
     
     if (result.status === 200) {
-      lastMatches = result.data;
       lastMatchesFetchedAt = Date.now();
+      const currentHash = getMatchesHash(result.data);
+      const matchesPayload = stripCompetitionFromMatchesPayload(result.data);
 
       if (ENABLE_CHANGE_DETECTION) {
-        const currentHash = getMatchesHash(lastMatches);
         if (currentHash !== lastMatchesHash) {
           lastMatchesHash = currentHash;
-          io.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
+          io.emit('matchesUpdate', matchesPayload);
           runtimeMetrics.wsEmits++;
         }
       } else {
-        io.emit('matchesUpdate', stripCompetitionFromMatchesPayload(lastMatches));
+        io.emit('matchesUpdate', matchesPayload);
         runtimeMetrics.wsEmits++;
       }
     }
