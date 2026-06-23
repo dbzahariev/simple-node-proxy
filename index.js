@@ -292,6 +292,18 @@ app.get('/api/matches/:id', async (req, res) => {
   return res.status(expandedResult.status).json(expandedResult.data);
 });
 
+app.get('/api/standings', async (req, res) => {
+  const result = await fetchFootballData(`competitions/${FOOTBALL_API.competition}/standings`);
+  pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
+  applyRateLimitHints(result);
+
+  if (result.status !== 200) {
+    return res.status(result.status).json(result.data);
+  }
+
+  return res.status(200).json(result.data);
+});
+
 app.get('/api/matches/cached', (req, res) => {
   res.status(410).json({
     message: 'Cached match responses are disabled. Use /api/matches for a fresh upstream fetch.',
