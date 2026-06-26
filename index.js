@@ -16,6 +16,9 @@ const ENABLE_CHANGE_DETECTION = ['1', 'true', 'yes', 'on'].includes(
 );
 const SOCKET_TRANSPORT_MODE = String(process.env.SOCKET_TRANSPORT_MODE ?? 'hybrid').toLowerCase();
 const SOCKET_WEBSOCKET_ONLY = SOCKET_TRANSPORT_MODE === 'websocket';
+const ENABLE_SELF_PING = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.ENABLE_SELF_PING ?? 'false').toLowerCase()
+);
 const POLL_INTERVAL_MS_RAW = Number.parseInt(process.env.POLL_INTERVAL_MS ?? '30000', 10);
 const POLL_INTERVAL_MS_MIN = 30000;
 const POLL_INTERVAL_MS = Number.isFinite(POLL_INTERVAL_MS_RAW) && POLL_INTERVAL_MS_RAW > 0
@@ -32,6 +35,17 @@ const runtimeMetrics = {
   cacheHits: 0,
   checks: 0,
 };
+
+let lastInboundActivityAt = Date.now();
+
+function logInboundActivity(source, details = '') {
+  const now = Date.now();
+  const idleSeconds = Math.max(0, Math.round((now - lastInboundActivityAt) / 1000));
+  lastInboundActivityAt = now;
+
+  const suffix = details ? ` ${details}` : '';
+  console.log(`[Activity] ${source}${suffix} | idleBefore=${idleSeconds}s`);
+}
 
 function pushMetricSample(samples, value) {
   if (!Number.isFinite(value)) return;
@@ -110,6 +124,11 @@ function stripCompetitionFromMatchesPayload(payload) {
 }
 
 app.use(cors());
+app.use((req, res, next) => {
+  logInboundActivity('HTTP', `${req.method} ${req.originalUrl}`);
+  next();
+});
+
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
@@ -490,6 +509,11 @@ function stopLongInterval() {
 
 // Self-pinging logic to prevent Render from sleeping
 function startSelfPing() {
+  if (!ENABLE_SELF_PING) {
+    console.log('[Keep-Alive] Self-ping disabled (ENABLE_SELF_PING is false)');
+    return;
+  }
+
   const url = process.env.RENDER_EXTERNAL_URL;
   if (!url) return; // Only run if RENDER_EXTERNAL_URL is set (on Render)
 
@@ -509,6 +533,7 @@ function startSelfPing() {
 }
 
 io.on('connection', (socket) => {
+  logInboundActivity('Socket', `connect id=${socket.id}`);
   clientsCount++;
   console.log(`Client connected. Total clients: ${clientsCount}. Transport: ${socket.conn.transport.name}`);
 
@@ -519,6 +544,7 @@ io.on('connection', (socket) => {
   startInterval();
 
   socket.on('disconnect', (reason) => {
+    logInboundActivity('Socket', `disconnect id=${socket.id} reason=${reason}`);
     console.log(`Client disconnected. Reason: ${reason}`);
     clientsCount--;
     if (clientsCount === 0) {
@@ -527,14 +553,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// Стартираме дългия интервал веднага, независимо от клиентите
-startLongInterval();
-
 // Start the self-pinging service
 startSelfPing();
-
-// Извикваме проверката веднага веднъж при стартиране на сървъра
-checkForUpdates();
 
 async function checkForUpdates() {
   if (isCheckingUpdates) {
@@ -612,6 +632,7 @@ server.listen(PORT, () => {
   console.log(`  BASELINE_REFRESH_MS   = ${process.env.BASELINE_REFRESH_MS ?? '(not set, default 300000ms)'}`);
   console.log(`  UPSTREAM_TIMEOUT_MS   = ${process.env.UPSTREAM_TIMEOUT_MS ?? '(not set, default 15000ms)'}`);
   console.log(`  ENABLE_CHANGE_DETECTION = ${process.env.ENABLE_CHANGE_DETECTION ?? '(not set, default false)'}`);
+  console.log(`  ENABLE_SELF_PING      = ${process.env.ENABLE_SELF_PING ?? '(not set, default false)'}`);
   console.log(`  SOCKET_TRANSPORT_MODE = ${process.env.SOCKET_TRANSPORT_MODE ?? '(not set, default hybrid)'}`);
   console.log(`  RENDER_EXTERNAL_URL   = ${process.env.RENDER_EXTERNAL_URL ?? '(not set, self-ping disabled)'}`);
   console.log('[Config] Active values:');
@@ -619,5 +640,6 @@ server.listen(PORT, () => {
   console.log(`  BASELINE_REFRESH_MS   → ${BASELINE_REFRESH_MS}ms`);
   console.log(`  UPSTREAM_TIMEOUT_MS   → ${HAS_UPSTREAM_TIMEOUT ? `${UPSTREAM_TIMEOUT_MS}ms` : 'disabled'}`);
   console.log(`  ENABLE_CHANGE_DETECTION → ${ENABLE_CHANGE_DETECTION}`);
+  console.log(`  ENABLE_SELF_PING      → ${ENABLE_SELF_PING}`);
   console.log(`  SOCKET_TRANSPORT_MODE → ${SOCKET_WEBSOCKET_ONLY ? 'websocket-only' : 'hybrid (polling + websocket)'}`);
 });
