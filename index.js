@@ -47,6 +47,21 @@ function logInboundActivity(source, details = '') {
   console.log(`[Activity] ${source}${suffix} | idleBefore=${idleSeconds}s`);
 }
 
+function shouldSkipActivityLog(req) {
+  const path = String(req.path || req.originalUrl || '').split('?')[0];
+
+  // Ignore Render-style health checks and root HEAD probes.
+  if (/^\/health\d*$/i.test(path)) {
+    return true;
+  }
+
+  if (req.method === 'HEAD' && path === '/') {
+    return true;
+  }
+
+  return false;
+}
+
 function pushMetricSample(samples, value) {
   if (!Number.isFinite(value)) return;
   samples.push(value);
@@ -125,7 +140,9 @@ function stripCompetitionFromMatchesPayload(payload) {
 
 app.use(cors());
 app.use((req, res, next) => {
-  logInboundActivity('HTTP', `${req.method} ${req.originalUrl}`);
+  if (!shouldSkipActivityLog(req)) {
+    logInboundActivity('HTTP', `${req.method} ${req.originalUrl}`);
+  }
   next();
 });
 
