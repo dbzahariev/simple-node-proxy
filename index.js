@@ -234,6 +234,28 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
+function respondWithSnapshotFallback(res, routeName, upstreamResult, options = {}) {
+  const liveOnly = options.liveOnly === true;
+  const liveStatuses = ['IN_PLAY', 'PAUSED', 'TIMED', 'SCHEDULED', 'EXTRA_TIME', 'PENALTY_SHOOTOUT'];
+  const snapshot = getSnapshotMatchesSorted();
+  const payload = liveOnly
+    ? snapshot.filter((match) => liveStatuses.includes(String(match?.status || '').toUpperCase()))
+    : snapshot;
+
+  if (payload.length > 0) {
+    console.warn(`[API ${routeName}] Upstream unavailable (status=${upstreamResult?.status}). Serving cached snapshot (${payload.length} matches).`);
+    return res.status(200).json(payload);
+  }
+
+  const status = upstreamResult?.status === 500 ? 503 : upstreamResult?.status || 503;
+  return res.status(status).json({
+    error: 'Upstream football API is unavailable and no cached snapshot is available yet.',
+    route: routeName,
+    upstreamStatus: upstreamResult?.status ?? null,
+    upstreamError: upstreamResult?.data?.error ?? null,
+  });
+}
+
 app.get('/api/matches', async (req, res) => {
   const result = await fetchFootballData(`competitions/${FOOTBALL_API.competition}/matches`);
   pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
@@ -247,7 +269,7 @@ app.get('/api/matches', async (req, res) => {
     return res.status(200).json(matchesPayload);
   }
 
-  res.status(result.status).json(result.data);
+  return respondWithSnapshotFallback(res, '/api/matches', result);
 });
 
 app.get('/api/matches/live', async (req, res) => {
@@ -262,7 +284,7 @@ app.get('/api/matches/live', async (req, res) => {
     return res.status(200).json(delta);
   }
 
-  res.status(result.status).json(result.data);
+  return respondWithSnapshotFallback(res, '/api/matches/live', result, { liveOnly: true });
 });
 
 app.get('/api/matches/live/full', async (req, res) => {
@@ -276,7 +298,7 @@ app.get('/api/matches/live/full', async (req, res) => {
     return res.status(200).json(getSnapshotMatchesSorted());
   }
 
-  res.status(result.status).json(result.data);
+  return respondWithSnapshotFallback(res, '/api/matches/live/full', result);
 });
 
 app.get('/api/matches/:id', async (req, res) => {
