@@ -247,13 +247,8 @@ function respondWithSnapshotFallback(res, routeName, upstreamResult, options = {
     return res.status(200).json(payload);
   }
 
-  const status = upstreamResult?.status === 500 ? 503 : upstreamResult?.status || 503;
-  return res.status(status).json({
-    error: 'Upstream football API is unavailable and no cached snapshot is available yet.',
-    route: routeName,
-    upstreamStatus: upstreamResult?.status ?? null,
-    upstreamError: upstreamResult?.data?.error ?? null,
-  });
+  console.warn(`[API ${routeName}] Upstream unavailable (status=${upstreamResult?.status}). No snapshot yet, returning empty list.`);
+  return res.status(200).json([]);
 }
 
 app.get('/api/matches', async (req, res) => {
@@ -355,11 +350,27 @@ app.get('/api/standings', async (req, res) => {
   pushMetricSample(runtimeMetrics.apiFetchMs, result.durationMs);
   applyRateLimitHints(result);
 
-  if (result.status !== 200) {
-    return res.status(result.status).json(result.data);
+  if (result.status === 200) {
+    cachedStandingsPayload = result.data;
+    return res.status(200).json(result.data);
   }
 
-  return res.status(200).json(result.data);
+  if (cachedStandingsPayload) {
+    console.warn(`[API /api/standings] Upstream unavailable (status=${result.status}). Serving cached standings.`);
+    return res.status(200).json(cachedStandingsPayload);
+  }
+
+  console.warn(`[API /api/standings] Upstream unavailable (status=${result.status}). No cached standings yet, returning empty payload.`);
+  return res.status(200).json({
+    competition: {
+      code: FOOTBALL_API.competition,
+      name: 'Fallback',
+    },
+    season: null,
+    standings: [],
+    lastUpdated: null,
+    source: 'fallback-empty',
+  });
 });
 
 app.get('/api/matches/cached', (req, res) => {
@@ -385,6 +396,7 @@ let pollIntervalDynamicMs = POLL_INTERVAL_MS;
 let nextPollNotBeforeTs = 0;
 let retryBackoffMs = 0;
 const snapshotById = new Map();
+let cachedStandingsPayload = null;
 let intervalId = null;
 let longIntervalId = null;
 let clientsCount = 0;
